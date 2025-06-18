@@ -115,6 +115,8 @@ func main() {
 
 	// Randomly try to get elements in the entries list
 	rand.New(rand.NewSource(time.Now().UnixNano()))
+	cacheHits := 0
+	cacheMisses := 0
 	for i := 0; i < TOTAL_ENTRIES/2; i++ {
 		// Randomly pick an index, with a chance to miss (i.e., pick an out-of-range index)
 		var idx int
@@ -129,13 +131,20 @@ func main() {
 			panic(err)
 		}
 		if found {
-			// fmt.Printf("Found in cache: key=%s, value=%s\n", key, value)
+			cacheHits++
 		} else {
-			// fmt.Printf("Not found in cache: key=%s\n", key)
+			cacheMisses++
 		}
 	}
 
 	elapsed := time.Since(startTime)
+
+	fmt.Printf("Cache hits: %d\n", cacheHits)
+	fmt.Printf("Cache misses: %d\n", cacheMisses)
+	fmt.Printf("Cache hit rate: %.2f%%\n", float64(cacheHits)/float64(cacheHits+cacheMisses)*100)
+
+	fmt.Println("-------------------------")
+
 	if BLOOM_FILTER_ENABLED {
 		fmt.Println("Bloom filter enabled")
 	} else {
