@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"math/rand"
+	"sync"
 	"time"
 
 	"github.com/go-redis/redis/v8"
@@ -69,22 +70,47 @@ func main() {
 	TOTAL_ENTRIES := 100000
 	BLOOM_FILTER_ENABLED := true
 
-	entries := make([]struct {
+	// Use a single struct for entry to avoid repeated struct literal allocation
+	type entry struct {
 		key   string
 		value string
 		ttl   int
-	}, TOTAL_ENTRIES)
-
-	for i := 0; i < TOTAL_ENTRIES; i++ {
-		entries[i].key = fmt.Sprintf("key%d", i)
-		entries[i].value = fmt.Sprintf("value%d", i)
-		entries[i].ttl = 60 + i // Example: different TTLs
 	}
 
-	for _, entry := range entries {
-		if err := cache.Set(entry.key, entry.value, entry.ttl); err != nil {
-			panic(err)
+	entries := make([]entry, TOTAL_ENTRIES)
+	for i := 0; i < TOTAL_ENTRIES; i++ {
+		entries[i] = entry{
+			key:   fmt.Sprintf("key%d", i),
+			value: fmt.Sprintf("value%d", i),
+			ttl:   60 + i,
 		}
+	}
+
+	// Batch set using goroutines for parallelism (limit concurrency to avoid overwhelming Redis)
+	const maxConcurrency = 32
+	sem := make(chan struct{}, maxConcurrency)
+	var wg sync.WaitGroup
+	var setErr error
+	var once sync.Once
+
+	for _, entry := range entries {
+		sem <- struct{}{}
+		wg.Add(1)
+		go func(e struct {
+			key   string
+			value string
+			ttl   int
+		}) {
+			defer wg.Done()
+			if err := cache.Set(e.key, e.value, e.ttl); err != nil {
+				once.Do(func() { setErr = err })
+			}
+			<-sem
+		}(entry)
+	}
+	wg.Wait()
+	if setErr != nil {
+		panic(setErr)
 	}
 
 	// Randomly try to get elements in the entries list
@@ -95,7 +121,7 @@ func main() {
 		if rand.Float64() < 0.8 { // 80% chance to pick a valid index
 			idx = rand.Intn(len(entries))
 		} else { // 20% chance to pick a missing (non-existent) index
-			idx = len(entries) + rand.Intn(1000) // index outside the valid range
+			idx = len(entries) + rand.Intn(1000)
 		}
 		key := fmt.Sprintf("key%d", idx)
 		_, found, err := cache.Get(key, BLOOM_FILTER_ENABLED)
