@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"math/rand"
+	"strings"
 	"sync"
 	"time"
 
@@ -64,10 +65,9 @@ func (bc *BloomCache) Get(key string, bloomEnabled bool) (string, bool, error) {
 func main() {
 	startTime := time.Now()
 
-	// Example usage
 	cache := NewBloomCache("localhost:6379", 1000000, 0.01) // 1 million entries, 1% fp rate
 
-	TOTAL_ENTRIES := 100000
+	TOTAL_ENTRIES := 200000
 	BLOOM_FILTER_ENABLED := true
 
 	// Use a single struct for entry to avoid repeated struct literal allocation
@@ -81,8 +81,8 @@ func main() {
 	for i := 0; i < TOTAL_ENTRIES; i++ {
 		entries[i] = entry{
 			key:   fmt.Sprintf("key%d", i),
-			value: fmt.Sprintf("value%d", i),
-			ttl:   60 + i,
+			value: strings.Repeat("X", 1024), // 1KB value
+			ttl:   120,
 		}
 	}
 
