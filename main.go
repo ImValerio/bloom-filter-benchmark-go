@@ -60,29 +60,23 @@ func (bc *BloomCache) Get(key string, bloomEnabled bool) (string, bool, error) {
 	}
 	// Cache hit
 	return val, true, nil
+
 }
 
-func main() {
-	startTime := time.Now()
+type entry struct {
+	key   string
+	value string
+	ttl   int
+}
 
-	cache := NewBloomCache("localhost:6379", 1000000, 0.01) // 1 million entries, 1% fp rate
-
-	TOTAL_ENTRIES := 200000
-	BLOOM_FILTER_ENABLED := true
-
-	// Use a single struct for entry to avoid repeated struct literal allocation
-	type entry struct {
-		key   string
-		value string
-		ttl   int
-	}
+func saveEntriesToRedis(cache *BloomCache) []entry {
 
 	entries := make([]entry, TOTAL_ENTRIES)
 	for i := 0; i < TOTAL_ENTRIES; i++ {
 		entries[i] = entry{
 			key:   fmt.Sprintf("key%d", i),
 			value: strings.Repeat("X", 1024), // 1KB value
-			ttl:   120,
+			ttl:   100000,
 		}
 	}
 
@@ -112,45 +106,93 @@ func main() {
 	if setErr != nil {
 		panic(setErr)
 	}
+	return entries
+}
 
-	// Randomly try to get elements in the entries list
-	rand.New(rand.NewSource(time.Now().UnixNano()))
-	cacheHits := 0
-	cacheMisses := 0
-	for i := 0; i < TOTAL_ENTRIES/2; i++ {
-		// Randomly pick an index, with a chance to miss (i.e., pick an out-of-range index)
-		var idx int
-		if rand.Float64() < 0.8 { // 80% chance to pick a valid index
-			idx = rand.Intn(len(entries))
-		} else { // 20% chance to pick a missing (non-existent) index
-			idx = len(entries) + rand.Intn(1000)
+const (
+	TOTAL_ENTRIES = 400000
+	GET_REQUESTS  = 200000
+	NUM_RUNS      = 10
+	REDIS_ADDR    = "localhost:6379"
+)
+
+func main() {
+
+	cache := NewBloomCache(REDIS_ADDR, 1000000, 0.01) // 1 million entries, 1% fp rate
+
+	// Use a single struct for entry to avoid repeated struct literal allocation
+	entries := saveEntriesToRedis(cache)
+	fmt.Println("Entries saved to Redis")
+
+	// Run the benchmark n times for both Bloom filter enabled and disabled, report average times and speedup
+
+	type benchResult struct {
+		totalTime   time.Duration
+		totalHits   int
+		totalMisses int
+	}
+
+	runBenchmark := func(bloomEnabled bool) benchResult {
+		var totalTime time.Duration
+		var totalHits, totalMisses int
+
+		for run := 0; run < NUM_RUNS; run++ {
+			start := time.Now()
+			cacheHits := 0
+			cacheMisses := 0
+			for i := 0; i < GET_REQUESTS; i++ {
+				var idx int
+				if rand.Float64() < 0.8 {
+					idx = rand.Intn(len(entries))
+				} else {
+					idx = len(entries) + rand.Intn(1000)
+				}
+				key := fmt.Sprintf("key%d", idx)
+				_, found, err := cache.Get(key, bloomEnabled)
+				if err != nil {
+					panic(err)
+				}
+				if found {
+					cacheHits++
+				} else {
+					cacheMisses++
+				}
+			}
+
+			elapsed := time.Since(start)
+
+			totalTime += elapsed
+			totalHits += cacheHits
+			totalMisses += cacheMisses
+
+			fmt.Printf("  Run %d: time=%s, hits=%d, misses=%d, hit rate=%.2f%%\n", run+1, elapsed, cacheHits, cacheMisses, float64(cacheHits)/float64(cacheHits+cacheMisses)*100)
 		}
-		key := fmt.Sprintf("key%d", idx)
-		_, found, err := cache.Get(key, BLOOM_FILTER_ENABLED)
-		if err != nil {
-			panic(err)
-		}
-		if found {
-			cacheHits++
-		} else {
-			cacheMisses++
+		return benchResult{
+			totalTime:   totalTime,
+			totalHits:   totalHits,
+			totalMisses: totalMisses,
 		}
 	}
 
-	elapsed := time.Since(startTime)
+	fmt.Println("Running benchmark with Bloom filter ENABLED...")
+	bloomOnResult := runBenchmark(true)
+	fmt.Println("Running benchmark with Bloom filter DISABLED...")
+	bloomOffResult := runBenchmark(false)
 
-	fmt.Printf("Cache hits: %d\n", cacheHits)
-	fmt.Printf("Cache misses: %d\n", cacheMisses)
-	fmt.Printf("Cache hit rate: %.2f%%\n", float64(cacheHits)/float64(cacheHits+cacheMisses)*100)
+	avgTimeOn := bloomOnResult.totalTime / time.Duration(NUM_RUNS)
+	avgTimeOff := bloomOffResult.totalTime / time.Duration(NUM_RUNS)
 
 	fmt.Println("-------------------------")
+	fmt.Printf("Bloom filter ENABLED:\n")
+	fmt.Printf("  Avg time: %s\n", avgTimeOn)
+	fmt.Printf("  Avg hit rate: %.2f%%\n", float64(bloomOnResult.totalHits)/float64(bloomOnResult.totalHits+bloomOnResult.totalMisses)*100)
+	fmt.Println("-------------------------")
+	fmt.Printf("Bloom filter DISABLED:\n")
+	fmt.Printf("  Avg time: %s\n", avgTimeOff)
+	fmt.Printf("  Avg hit rate: %.2f%%\n", float64(bloomOffResult.totalHits)/float64(bloomOffResult.totalHits+bloomOffResult.totalMisses)*100)
+	fmt.Println("-------------------------")
 
-	if BLOOM_FILTER_ENABLED {
-		fmt.Println("Bloom filter enabled")
-	} else {
-		fmt.Println("Bloom filter disabled")
-	}
-
-	fmt.Printf("Time taken: %s\n", elapsed)
+	speedup := float64(avgTimeOff) / float64(avgTimeOn)
+	fmt.Printf("Speedup with Bloom filter ON: %.2fx\n", speedup)
 
 }
